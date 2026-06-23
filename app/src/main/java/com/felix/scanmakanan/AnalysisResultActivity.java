@@ -40,7 +40,7 @@ public class AnalysisResultActivity extends AppCompatActivity {
 
     public static final String EXTRA_IMAGE_URI = "image_uri";
     private static final String TAG = "AnalysisResultActivity";
-    private static final String GEMINI_API_KEY = "AIzaSyDd1QTiifVX8061hpz_S_8vMo6l3vP8dKU";
+    private static final String GEMINI_API_KEY = "AIzaSyBwSfExO7zyMkKhmkeB72rK2ccv7g04ADo";
     private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 
     private static final int MAX_QUOTA_RETRY = 3;
@@ -442,83 +442,125 @@ public class AnalysisResultActivity extends AppCompatActivity {
 
     private String encodeImageToBase64(Uri imageUri) throws IOException {
         // Optimized for Gemini API compatibility
-        final int maxDim = 384; // Further reduced for better compatibility
-        final int jpegQuality = 60; // Lower quality for smaller file size
+        final int maxDim = 512; // Increased for better quality while keeping reasonable size
+        final int jpegQuality = 75; // Better quality for analysis
 
         Log.d(TAG, "Starting image encoding for URI: " + imageUri.toString());
 
-        InputStream boundsStream = getContentResolver().openInputStream(imageUri);
-        if (boundsStream == null) {
-            throw new IOException("Cannot open image input stream");
-        }
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeStream(boundsStream, null, bounds);
-        try {
-            boundsStream.close();
-        } catch (IOException ignored) {
-        }
-
-        Log.d(TAG, "Original image dimensions: " + bounds.outWidth + "x" + bounds.outHeight);
-
-        int srcW = Math.max(1, bounds.outWidth);
-        int srcH = Math.max(1, bounds.outHeight);
-        int inSampleSize = 1;
-        while ((srcW / inSampleSize) > maxDim || (srcH / inSampleSize) > maxDim) {
-            inSampleSize *= 2;
-        }
-
-        BitmapFactory.Options opts = new BitmapFactory.Options();
-        opts.inSampleSize = inSampleSize;
-        opts.inPreferredConfig = Bitmap.Config.RGB_565; // Use RGB_565 for smaller memory footprint
-
-        InputStream decodeStream = getContentResolver().openInputStream(imageUri);
-        if (decodeStream == null) {
-            throw new IOException("Cannot open image input stream");
-        }
-        Bitmap bitmap = BitmapFactory.decodeStream(decodeStream, null, opts);
-        try {
-            decodeStream.close();
-        } catch (IOException ignored) {
-        }
-
-        if (bitmap == null) {
-            throw new IOException("Failed to decode image");
-        }
-
-        Log.d(TAG, "Decoded bitmap dimensions: " + bitmap.getWidth() + "x" + bitmap.getHeight());
-
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        boolean compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, baos);
-        bitmap.recycle();
-
-        if (!compressed) {
-            throw new IOException("Failed to compress image");
-        }
-
-        byte[] imageBytes = baos.toByteArray();
-        String base64String = Base64.encodeToString(imageBytes, Base64.NO_WRAP);
+        InputStream boundsStream = null;
+        InputStream decodeStream = null;
+        Bitmap bitmap = null;
         
-        Log.d(TAG, "Image encoded successfully. Size: " + (imageBytes.length / 1024) + " KB");
-        Log.d(TAG, "Base64 string length: " + base64String.length());
+        try {
+            boundsStream = getContentResolver().openInputStream(imageUri);
+            if (boundsStream == null) {
+                throw new IOException("Cannot open image input stream");
+            }
+            
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeStream(boundsStream, null, bounds);
+            
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                throw new IOException("Invalid image dimensions: " + bounds.outWidth + "x" + bounds.outHeight);
+            }
 
-        return base64String;
+            Log.d(TAG, "Original image dimensions: " + bounds.outWidth + "x" + bounds.outHeight);
+
+            int srcW = bounds.outWidth;
+            int srcH = bounds.outHeight;
+            int inSampleSize = 1;
+            
+            // Calculate optimal sample size
+            while ((srcW / inSampleSize) > maxDim || (srcH / inSampleSize) > maxDim) {
+                inSampleSize *= 2;
+            }
+
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = inSampleSize;
+            opts.inPreferredConfig = Bitmap.Config.RGB_565;
+
+            decodeStream = getContentResolver().openInputStream(imageUri);
+            if (decodeStream == null) {
+                throw new IOException("Cannot open image input stream for decoding");
+            }
+            
+            bitmap = BitmapFactory.decodeStream(decodeStream, null, opts);
+            if (bitmap == null) {
+                throw new IOException("Failed to decode image - bitmap is null");
+            }
+
+            Log.d(TAG, "Decoded bitmap dimensions: " + bitmap.getWidth() + "x" + bitmap.getHeight());
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            boolean compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, baos);
+            
+            if (!compressed) {
+                throw new IOException("Failed to compress image");
+            }
+
+            byte[] imageBytes = baos.toByteArray();
+            if (imageBytes.length == 0) {
+                throw new IOException("Compressed image is empty");
+            }
+            
+            // Check if image is too large for API (max ~4MB for Gemini)
+            if (imageBytes.length > 4 * 1024 * 1024) {
+                Log.w(TAG, "Image too large: " + (imageBytes.length / 1024) + " KB, recompressing");
+                baos.reset();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos);
+                imageBytes = baos.toByteArray();
+            }
+            
+            String base64String = Base64.encodeToString(imageBytes, Base64.NO_WRAP);
+            
+            if (base64String.isEmpty()) {
+                throw new IOException("Base64 encoding failed - empty string");
+            }
+            
+            Log.d(TAG, "Image encoded successfully. Size: " + (imageBytes.length / 1024) + " KB");
+            Log.d(TAG, "Base64 string length: " + base64String.length());
+
+            return base64String;
+            
+        } finally {
+            // Clean up resources
+            if (boundsStream != null) {
+                try { boundsStream.close(); } catch (IOException ignored) {}
+            }
+            if (decodeStream != null) {
+                try { decodeStream.close(); } catch (IOException ignored) {}
+            }
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
+        }
     }
 
     private String callGeminiAPI(String base64Image) throws IOException {
+        Log.d(TAG, "Starting Gemini API call to: " + GEMINI_API_URL);
+        Log.d(TAG, "API Key present: " + (GEMINI_API_KEY != null && !GEMINI_API_KEY.isEmpty()));
+        
         URL url = new URL(GEMINI_API_URL);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("X-goog-api-key", GEMINI_API_KEY);
-        connection.setRequestProperty("Connection", "keep-alive");
-        connection.setRequestProperty("Keep-Alive", "timeout=30");
-        connection.setRequestProperty("User-Agent", "ScanMakanan-Android/1.0");
-        connection.setDoOutput(true);
-        connection.setConnectTimeout(15_000);
-        connection.setReadTimeout(30_000);
-        connection.setUseCaches(false);
+        try {
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("X-goog-api-key", GEMINI_API_KEY);
+            connection.setRequestProperty("Connection", "keep-alive");
+            connection.setRequestProperty("Keep-Alive", "timeout=30");
+            connection.setRequestProperty("User-Agent", "ScanMakanan-Android/1.0");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(15_000);
+            connection.setReadTimeout(30_000);
+            connection.setUseCaches(false);
+            
+            Log.d(TAG, "Connection configured successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to configure connection", e);
+            throw new IOException("Failed to configure API connection: " + e.getMessage(), e);
+        }
         
         String jsonInputString = String.format(
             "{\n" +
@@ -526,7 +568,7 @@ public class AnalysisResultActivity extends AppCompatActivity {
             "      {\n" +
             "        \"parts\": [\n" +
             "          {\n" +
-            "            \"text\": \"What food or drink is in this image? Provide:\\nName: [specific name]\\nCalories: [number] kcal\\n\\nAnswer in exactly 2 lines.\"\n" +
+            "            \"text\": \"Analyze this food or drink image and provide the following information in Indonesian:\\n\\nNama: [nama spesifik makanan/minuman]\\nKalori: [jumlah kalori dalam angka] kkal\\n\\nFormat jawaban harus tepat 2 baris dengan format yang ditentukan.\"\n" +
             "          },\n" +
             "          {\n" +
             "            \"inline_data\": {\n" +
@@ -547,15 +589,35 @@ public class AnalysisResultActivity extends AppCompatActivity {
         try (OutputStream os = connection.getOutputStream()) {
             byte[] input = jsonInputString.getBytes("utf-8");
             os.write(input, 0, input.length);
-            Log.d(TAG, "Request sent successfully");
+            Log.d(TAG, "Request sent successfully. Size: " + input.length + " bytes");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to send request", e);
+            throw new IOException("Failed to send API request: " + e.getMessage(), e);
         }
         
-        int responseCode = connection.getResponseCode();
-        Log.d(TAG, "Response code: " + responseCode);
+        int responseCode;
+        try {
+            responseCode = connection.getResponseCode();
+            Log.d(TAG, "Response code: " + responseCode);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get response code", e);
+            throw new IOException("Failed to get API response: " + e.getMessage(), e);
+        }
         
-        InputStream inputStream = (responseCode >= 200 && responseCode < 300) 
-            ? connection.getInputStream() 
-            : connection.getErrorStream();
+        InputStream inputStream;
+        try {
+            inputStream = (responseCode >= 200 && responseCode < 300) 
+                ? connection.getInputStream() 
+                : connection.getErrorStream();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get input stream", e);
+            throw new IOException("Failed to read API response: " + e.getMessage(), e);
+        }
+            
+        if (inputStream == null) {
+            Log.e(TAG, "Input stream is null");
+            throw new IOException("No response received from API");
+        }
             
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(inputStream, "utf-8"))) {
@@ -567,14 +629,25 @@ public class AnalysisResultActivity extends AppCompatActivity {
             
             String responseString = response.toString();
             Log.d(TAG, "Response length: " + responseString.length());
-            Log.d(TAG, "Response: " + responseString.substring(0, Math.min(200, responseString.length())));
+            if (responseString.length() > 0) {
+                Log.d(TAG, "Response preview: " + responseString.substring(0, Math.min(200, responseString.length())));
+            }
             
             if (responseCode >= 200 && responseCode < 300) {
+                if (responseString.isEmpty()) {
+                    Log.w(TAG, "Empty response received");
+                    throw new IOException("Empty response received from API");
+                }
                 return responseString;
             } else {
                 Log.e(TAG, "API Error Response: " + responseString);
                 throw new IOException("HTTP " + responseCode + ": " + responseString);
             }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read response", e);
+            throw new IOException("Failed to read API response: " + e.getMessage(), e);
+        } finally {
+            connection.disconnect();
         }
     }
 
